@@ -30,6 +30,7 @@ void initShell(struct Shell *sh);
 void runShell(struct Shell *sh);
 void shellClrInput(struct Shell *sh);
 void shellProcessArgs(struct Shell *sh);
+void shellRunSysProc(struct Shell *sh);
 
 int main(int argc, char *argv[]) {
 	struct Shell *sh = malloc(sizeof(struct Shell));
@@ -47,6 +48,10 @@ void initShell(struct Shell *sh) {
 	getcwd(sh->cwd, sizeof(sh->cwd));
 }
 
+void shellRunSysProc(struct Shell *sh) {
+	printf("forks and stuff\n");
+}
+
 void shellProcessArgs(struct Shell *sh) {
 	int error = -5;
 	char *buff;
@@ -55,35 +60,30 @@ void shellProcessArgs(struct Shell *sh) {
 	} else if (strcmp(sh->args[0], "exit") == 0) {
 		sh->exit = 1;
 	} else if (strcmp(sh->args[0], "cd") == 0) {
+		sh->status[0] = 0;
 		sh->status[1] = 0;
 		if (sh->argCount == 1) {
 			// change to directory specified in the HOME variable
-			error = chdir(getenv("HOME"));
-			if (error == -1) {
-				sh->status[0] = 1;
-			} else {
-				sh->status[0] = 0;
-			}
+			sh->status[0] = chdir(getenv("HOME"));
 		} else if (sh->argCount == 2) {
 			// change to the specified directory
-			error = chdir(sh->args[1]);
-			if (error == -1) {
-				sh->status[0] = 1;
-			} else {
-				sh->status[0] = 0;
-			}
+			sh->status[0] = chdir(sh->args[1]);
 		} else {
 			printf("cd: Too many arguments\n");
 			sh->status[0] = 1;
 		}
 	} else if (strcmp(sh->args[0], "status") == 0) {
 		if (sh->status[1] == 0) {
-			printf("exit value %i\n", sh->status[0]);
+			if (sh->status[0] == 0) {
+				printf("exit value 0\n");
+			} else {
+				printf("exit value 1\n");
+			}
 		} else if (sh->status[1] == 1) {
 			printf("terminated by signal %i\n", sh->status[0]);
 		}
 	} else {
-		printf("time to fork and stuff\n");
+		shellRunSysProc(sh);
 	}
 }
 
