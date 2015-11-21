@@ -19,10 +19,16 @@
 struct Shell {
 	int status[2],
 		exit,
-		argCount;
+		argCount,
+		child,
+		parent,
+		numChildPIDs;
+	pid_t childPIDs[200],
+		  exitPID,
+		  spawnPID;
 	char cwd[1024],
 		 buffer[2049],
-	     args[512][512];
+	     *args[512];
 };
 
 // initialize global shell settings and attributes
@@ -40,16 +46,47 @@ int main(int argc, char *argv[]) {
 	return 0;
 }
 
-void initShell(struct Shell *sh) {
-	sh->status[0] = 0;
-	sh->status[1] = 0;
-	sh->exit = 0;
-	sh->argCount = 0;
-	getcwd(sh->cwd, sizeof(sh->cwd));
-}
 
 void shellRunSysProc(struct Shell *sh) {
-	printf("forks and stuff\n");
+	int bg = -1;
+	sh->spawnPID = fork();
+	if (strcmp(sh->args[sh->argCount - 1], "&") == 0) {
+		bg = 1;
+		sh->args[sh->argCount - 1] = '\0';
+	}
+	switch(sh->spawnPID) {
+		case -1:
+			perror("Fork failed!");
+			break;
+		case 0:
+			if (bg == 1) {
+				
+			}
+			execvp(sh->args[0], sh->args);
+			exit(0);
+			break;
+		default:
+			if (bg != 1) {
+				sh->exitPID = waitpid(sh->spawnPID, &sh->status[0], 0);
+			}
+			if (WIFEXITED(sh->status[0])) {
+				int myExit = WEXITSTATUS(sh->status[0]);
+				printf("exit: %i\n", myExit);
+			}
+			break;
+	}
+}
+
+void initShell(struct Shell *sh) {
+	int i = 0;
+	sh->status[0] = 0;					// initial status is good (0)
+	sh->status[1] = 0;					// initial type is uninterrupted exit
+	sh->exit = 0;						// do not exit loop until this changes
+	sh->argCount = 0;					// starting with 0 arguments
+	getcwd(sh->cwd, sizeof(sh->cwd));	// sets initial working directory
+	sh->numChildPIDs = 0;
+	sh->parent = -5;
+	sh->child = -5;
 }
 
 void shellProcessArgs(struct Shell *sh) {
@@ -88,8 +125,13 @@ void shellProcessArgs(struct Shell *sh) {
 }
 
 void runShell(struct Shell *sh) {
-	char *token;
+	int i = 0;
+	char *token = malloc(sizeof(char) * 512);
 	while (sh->exit == 0) {
+		for (i = 0; i < 512; i++) {
+			sh->args[i] = malloc(sizeof(char) * 512);
+		}
+	
 		// clear shell input buffer and arguments array
 		shellClrInput(sh);
 		// display colon for user prompt
@@ -98,26 +140,29 @@ void runShell(struct Shell *sh) {
 		fgets(sh->buffer, 2048, stdin);
 		// parse user input to shell arguments array
 		token = strtok(sh->buffer, " ");
+		
 		while (token != NULL) {
 			strcpy(sh->args[sh->argCount], token);
 			sh->argCount++;
 			token = strtok(NULL, " ");
 		}
+		
+		// remove newline character from last argument
 		sh->args[sh->argCount - 1][strlen(sh->args[sh->argCount - 1]) - 1] = '\0';
+		// null terminate argument after the last
+		sh->args[sh->argCount] = NULL;
 		shellProcessArgs(sh);
+		for (i = 0; i < 512; i++) {
+			free(sh->args[i]);
+		}
 	}
+	free(token);
 }
 
 void shellClrInput(struct Shell *sh) {
 	int i = 0,
 		j = 0;
-
-	// clear shell argument strings for next command
-	for (i = 0; i < sh->argCount; i++) {
-		for (j = 0; j < 512; j++) {
-			sh->args[sh->argCount][j] = '\0';
-		}
-	}
+	
 	// clear input buffer for next user input
 	for (i = 0; i < 2049; i++) {
 		sh->buffer[i] = '\0';
