@@ -18,25 +18,17 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-
-struct ChildProcess {
-	pid_t pid;
-	int exitStatus,
-		termSignal;
-};
+#include <signal.h>
 
 struct Shell {
 	int status[2],
 		exit,
 		argCount,
-		numChildren;
+		sigChild;
 	char cwd[1024],
 		 buffer[2049],
 	     *args[512];
-	struct ChildProcess children[200];
 };
-
-
 
 // initialize global shell settings and attributes
 void initShell(struct Shell *sh);
@@ -44,12 +36,47 @@ void runShell(struct Shell *sh);
 void shellClrInput(struct Shell *sh);
 void shellProcessArgs(struct Shell *sh);
 void shellRunSysProc(struct Shell *sh);
+void checkBgProcs(int signo);
+void sigInterrupt(int signo);
+
+int children[200];
+int numChildren = 0;
+int bgCheck = 0;
+char bgMessage[100];
 
 int main(int argc, char *argv[]) {
 	struct Shell *sh = malloc(sizeof(struct Shell));
+	struct sigaction act;
+	act.sa_handler = SIG_IGN;
+	sigaction(SIGINT, &act, NULL);
+	struct sigaction sa;
+	sa.sa_handler = checkBgProcs;
+	sa.sa_flags = SA_RESTART;
+	sigfillset(&sa.sa_mask);
+	sigaction(SIGCHLD, &sa, NULL);
+
 	initShell(sh);
 	runShell(sh);
 	return 0;
+}
+
+void checkBgProcs(int signo) {
+	int status,
+		i = 0;
+	pid_t exitPID = -5;
+	exitPID = waitpid(-1, &status, WNOHANG);
+
+	for (i = 0; i < numChildren; i++) {
+		if (exitPID == children[i]) {
+			if (WIFEXITED(status)) {
+				bgCheck = 1;
+				sprintf(bgMessage, "background pid %i is done: exit value %i\n", exitPID, status);
+			} else if (WIFSIGNALED(status)) {
+				bgCheck = 1;
+				sprintf(bgMessage, "background pid %i is done: terminated by signal %i\n", exitPID, status);
+			}
+		}
+	}
 }
 
 
@@ -65,8 +92,9 @@ void shellRunSysProc(struct Shell *sh) {
 		 inFile[512];
 	pid_t spawnPID,
 		exitPID;
-	fflush(0);
 	spawnPID = fork();
+	
+	
 	if (strcmp(sh->args[sh->argCount - 1], "&") == 0) {
 		bg = 1;
 		sh->args[sh->argCount - 1] = '\0';
@@ -96,53 +124,75 @@ void shellRunSysProc(struct Shell *sh) {
 		sh->args[outIndex] = NULL;
 	}
 
-		switch(spawnPID) {
+	struct sigaction sach;
+	
+	switch(spawnPID) {
 		case -1:
 			perror("Fork failed!");
 			break;
 		case 0:
+			sach.sa_handler = sigInterrupt;
+			sigfillset(&sach.sa_mask);
+			sigaction(SIGINT, &sach, NULL);
+
 			if (inIndex != -1) {
 				// open input file read only
 				inputFD = open(inFile, O_RDONLY);
+				if (inputFD == -1) {
+					printf("smallsh: cannot open %s for input\n", inFile);
+					exit(1);
+				}
 				fdRedirect = dup2(inputFD, 0);
 				if (fdRedirect == -1) {
 					perror("dup2");
 					exit(2);
 				}
+			} else if (bg == 1) {
+				inputFD = open("/dev/null", O_RDONLY);
+				if (inputFD == -1) {
+					printf("smallsh: cannot open %s for input\n", inFile);
+				}
+				fdRedirect = dup2(inputFD, 0);
 			}
 			if (outIndex != -1) {
 				// open output file write only
 				outputFD = open(outFile, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+				if (outputFD == -1) {
+					printf("smallsh: cannot open %s for output\n", outFile);
+				}
 				fdRedirect = dup2(outputFD, 1);
 				if (fdRedirect == -1) {
 					perror("dup2");
 					exit(2);
 				}
 			}
-			errno = 0;
 			sh->status[0] = execvp(sh->args[0], sh->args);
-			if (sh->status[0] == -1 && errno != 0) {
-			
-			}
-			printf("%s: Command not found.\n", sh->args[0]);
-			exit;
+			printf("%s: no such file or directory\n", sh->args[0]);
+			exit(1);
 			break;
 		default:
-			sh->children[sh->numChildren].pid = spawnPID;
-			sh->numChildren++;
-			
 			if (bg != 1) {
 				exitPID = waitpid(spawnPID, &sh->status[0], 0);
+				if (WIFEXITED(sh->status[0])) {
+					sh->status[1] = 0;
+				} else if (WIFSIGNALED(sh->status[0])) {
+					sh->status[1] = 1;
+					printf("terminated by signal %i\n", sh->status[0]);
+				}
 			} else {
+				children[numChildren] = spawnPID;
 				exitPID = waitpid(spawnPID, &sh->status[0], WNOHANG);
+				numChildren++;
+				printf("background pid is %i\n", spawnPID);
 			}
-			if (WIFEXITED(sh->status[0])) {
-				sh->children[sh->numChildren - 1].exitStatus = WEXITSTATUS(sh->status[0]);
-				sh->status[1] = 0;
-			} else if (WIFSIGNALED(sh->status[0])) {
-				sh->children[sh->numChildren - 1].termSignal = WTERMSIG(sh->children[sh->numChildren - 1].exitStatus);
-				sh->status[1] = 1;
+			if (bgCheck == 1) {
+				printf("%s", bgMessage);
+				for (i = 0; i < 512; i++) {
+					bgMessage[i] = '\0';
+				}
+				bgCheck = 0;
 			}
+
 			break;
 	}
 }
@@ -154,14 +204,19 @@ void initShell(struct Shell *sh) {
 	sh->exit = 0;						// do not exit loop until this changes
 	sh->argCount = 0;					// starting with 0 arguments
 	getcwd(sh->cwd, sizeof(sh->cwd));	// sets initial working directory
-	sh->numChildren = 0;
+	sh->sigChild = 0;
+	bgMessage[0] = '\0';
+	bgCheck = 0;
 }
 
 void shellProcessArgs(struct Shell *sh) {
 	int error = -5;
 	char *buff;
+	if (sh->sigChild == 1) {
+		printf("display bg child info\n");
+	}
 	if (strcmp(sh->args[0], "") == 0 || sh->args[0][0] == '#') {
-		
+	
 	} else if (strcmp(sh->args[0], "exit") == 0) {
 		sh->exit = 1;
 	} else if (strcmp(sh->args[0], "cd") == 0) {
@@ -204,6 +259,14 @@ void runShell(struct Shell *sh) {
 		shellClrInput(sh);
 		// display colon for user prompt
 		printf(": ");
+		if (bgCheck == 1) {
+			printf("%s\n", bgMessage);
+			for (i = 0; i < 512; i++) {
+				bgMessage[i] = '\0';
+			}
+			bgCheck = 0;
+		}
+		fflush(0);
 		// read user input into shell buffer
 		fgets(sh->buffer, 2048, stdin);
 		// parse user input to shell arguments array
@@ -237,4 +300,11 @@ void shellClrInput(struct Shell *sh) {
 	}
 	// reset argument count
 	sh->argCount = 0;
+}
+
+void sigInterrupt(int signo) {
+	int status,
+		i = 0;
+	pid_t exitPID = -5;
+	printf("%i\n", signo);
 }
